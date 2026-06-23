@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>FaIR Climate Model</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: sans-serif; padding: 20px; max-width: 980px; margin: auto; color: #2c3e50; }
+    h2 { color: #2c3e50; margin-bottom: 4px; }
+    .subtitle { font-size: 0.88em; color: #888; margin-bottom: 16px; line-height: 1.5; }
+    .section { font-size: 0.78em; color: #999; text-transform: uppercase;
+               letter-spacing: 1px; margin: 14px 0 6px; border-top: 1px solid #eee;
+               padding-top: 10px; }
+    .controls { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 8px; }
+    .controls label { display: flex; flex-direction: column; font-size: 0.88em; color: #555; }
+    .controls select, .controls input[type="number"] {
+      margin-top: 3px; padding: 5px 8px; font-size: 1em;
+      border: 1px solid #ccc; border-radius: 4px; width: 130px; }
+    .controls input[type="file"] { margin-top: 3px; font-size: 0.88em; }
+    button { padding: 7px 18px; background: #2980b9; color: white; border: none;
+             border-radius: 4px; cursor: pointer; font-size: 0.95em; }
+    button:hover { background: #1f6391; }
+    button:disabled { background: #aaa; cursor: not-allowed; }
+    button.green { background: #27ae60; }
+    button.green:hover { background: #1e8449; }
+    .derived { font-size: 0.88em; color: #2c3e50; padding: 8px 12px;
+               background: #f0f4f8; border-radius: 4px; margin: 6px 0; }
+    .charts { display: flex; flex-direction: column; gap: 28px; margin-top: 20px; }
+    .chart-title { font-size: 0.92em; font-weight: 600; color: #34495e; margin-bottom: 3px; }
+    .chart-controls { display: flex; gap: 12px; align-items: center; margin-bottom: 5px; }
+    .chart-controls label { font-size: 0.82em; color: #666; display: flex;
+                            align-items: center; gap: 5px; }
+    .chart-controls select { padding: 3px 6px; font-size: 0.88em;
+                             border: 1px solid #ccc; border-radius: 3px; }
+    .chart-container { position: relative; height: 240px; width: 100%; }
+    .error { color: #c0392b; font-weight: 600; font-size: 0.9em; min-height: 1.2em; }
+    .note { font-size: 0.82em; color: #888; line-height: 1.5; margin: 4px 0 10px; }
+  </style>
+</head>
+<body>
+  <h2>FaIR Climate Model</h2>
+  <p class="subtitle">
+    Simplified climate emulator (FaIR v1.x) — emissions → concentrations → temperature.
+    Each run is shown alongside a zero-anthropogenic-emissions counterfactual with
+    identical internal variability, so the difference panel isolates the forced
+    anthropogenic signal.
+  </p>
+
+  <!-- SCENARIO -->
+  <div class="section">Baseline Scenario</div>
+  <div class="controls">
+    <label>Scenario:
+      <select id="scenario" style="width:200px">
+        <optgroup label="SSP (CMIP6 / AR6)">
+          <option value="ssp119">SSP1-1.9 (very low emissions)</option>
+          <option value="ssp126">SSP1-2.6 (low)</option>
+          <option value="ssp245" selected>SSP2-4.5 (intermediate)</option>
+          <option value="ssp370">SSP3-7.0 (high)</option>
+          <option value="ssp460">SSP4-6.0</option>
+          <option value="ssp585">SSP5-8.5 (very high)</option>
+        </optgroup>
+        <optgroup label="RCP (CMIP5 / AR5)">
+          <option value="rcp45">RCP 4.5</option>
+          <option value="rcp85">RCP 8.5</option>
+        </optgroup>
+      </select>
+    </label>
+    <button onclick="runModel()" id="runBtn">Run</button>
+  </div>
+
+  <!-- CUSTOM UPLOAD -->
+  <div class="section">Custom Emissions Scenario</div>
+  <p class="note">
+    Download the template (SSP2-4.5 values pre-filled for all species, 1765–2100),
+    edit any columns, and upload. Only include species you want to change —
+    the rest keep their SSP2-4.5 values.
+  </p>
+  <div class="controls">
+    <button class="green" onclick="window.location='/template'">Download Template</button>
+    <label>Upload scenario:
+      <input type="file" id="customFile" accept=".xlsx,.xls">
+    </label>
+    <button class="green" id="customBtn" onclick="runCustom()">Run Custom</button>
+  </div>
+  <p id="customError" class="error"></p>
+
+  <!-- CLIMATE PARAMETERS -->
+  <div class="section">Climate Feedback — λ (W/m²/°C) &nbsp;·&nbsp; ECS = 3.7 / λ</div>
+  <div class="controls">
+    <label>λ mean: <input type="number" id="lambda_mean" value="1.2" step="0.05" min="0.5" max="3.0" oninput="updateDerived()"></label>
+    <label>λ std:  <input type="number" id="lambda_std"  value="0.3" step="0.05" min="0.0" max="1.0" oninput="updateDerived()"></label>
+  </div>
+  <div class="section">Ocean Heat Exchange — γ (W/m²/°C) &nbsp;·&nbsp; TCR = 3.7 / (λ+γ)</div>
+  <div class="controls">
+    <label>γ mean: <input type="number" id="gamma_mean" value="0.7" step="0.05" min="0.1" max="2.0" oninput="updateDerived()"></label>
+    <label>γ std:  <input type="number" id="gamma_std"  value="0.2" step="0.05" min="0.0" max="1.0" oninput="updateDerived()"></label>
+  </div>
+  <div class="derived">
+    ECS = <strong><span id="ecs_val">3.08</span> °C</strong>
+    &nbsp;|&nbsp;
+    TCR = <strong><span id="tcr_val">1.95</span> °C</strong>
+  </div>
+
+  <!-- VARIABILITY -->
+  <div class="section">Internal Variability — AR(2)</div>
+  <div class="controls">
+    <label>σ (°C): <input type="number" id="variability_sigma" value="0.1" step="0.05" min="0.0" max="0.5"></label>
+    <label>φ1:     <input type="number" id="ar2_phi1" value="0.6"  step="0.05" min="-1.0" max="1.0"></label>
+    <label>φ2:     <input type="number" id="ar2_phi2" value="-0.2" step="0.05" min="-1.0" max="1.0"></label>
+  </div>
+
+  <p id="runError" class="error"></p>
+  <div id="resultsDerived" class="derived" style="display:none">
+    Run: ECS = <span id="ecsResult"></span> °C &nbsp;|&nbsp;
+    TCR = <span id="tcrResult"></span> °C &nbsp;|&nbsp;
+    Ensemble ECS <span id="ecsRange"></span> °C &nbsp;|&nbsp;
+    Ensemble TCR <span id="tcrRange"></span> °C
+  </div>
+
+  <!-- CHARTS -->
+  <div class="charts">
+    <div>
+      <div class="chart-title">Emissions — actual vs zero-anthropogenic counterfactual</div>
+      <div class="chart-controls">
+        <label>Species: <select id="emSpecies" onchange="rerenderEmissions()"></select></label>
+      </div>
+      <div class="chart-container"><canvas id="emChart"></canvas></div>
+    </div>
+
+    <div>
+      <div class="chart-title">Concentration — actual vs zero-anthropogenic counterfactual</div>
+      <div class="chart-controls">
+        <label>Species: <select id="concSpecies" onchange="rerenderConc()"></select></label>
+      </div>
+      <div class="chart-container"><canvas id="concChart"></canvas></div>
+    </div>
+
+    <div>
+      <div class="chart-title">Temperature anomaly — actual vs zero-anthropogenic counterfactual (overlaid)</div>
+      <div class="chart-container"><canvas id="tempChart"></canvas></div>
+    </div>
+
+    <div>
+      <div class="chart-title">Temperature difference — actual minus counterfactual (paired identical variability)</div>
+      <div class="chart-container"><canvas id="diffChart"></canvas></div>
+    </div>
+  </div>
+
+  <script>
+    const F2X = 3.7;
+    let charts = {}, lastData = null;
+    let speciesMeta = { emissions: {}, concentrations: {} };
+
+    async function init() {
+      updateDerived();
+      try {
+        const res = await fetch("/species");
+        speciesMeta = await res.json();
+
+        const emSel = document.getElementById("emSpecies");
+        emSel.innerHTML = "";
+        Object.entries(speciesMeta.emissions).forEach(([k, v]) => {
+          const o = document.createElement("option");
+          o.value = k; o.textContent = `${v.label} (${v.units})`; emSel.appendChild(o);
+        });
+        emSel.value = "co2_fossil";
+
+        const cSel = document.getElementById("concSpecies");
+        cSel.innerHTML = "";
+        Object.entries(speciesMeta.concentrations).forEach(([k, v]) => {
+          const o = document.createElement("option");
+          o.value = k; o.textContent = `${v.label} (${v.units})`; cSel.appendChild(o);
+        });
+        cSel.value = "co2";
+      } catch(e) { console.error("Could not load species list:", e); }
+    }
+
+    function updateDerived() {
+      const lam = parseFloat(document.getElementById("lambda_mean").value);
+      const gam = parseFloat(document.getElementById("gamma_mean").value);
+      if (!lam || !gam || lam <= 0 || gam <= 0) return;
+      document.getElementById("ecs_val").textContent = (F2X / lam).toFixed(2);
+      document.getElementById("tcr_val").textContent = (F2X / (lam + gam)).toFixed(2);
+    }
+
+    function getParams() {
+      return {
+        variability_sigma: parseFloat(document.getElementById("variability_sigma").value),
+        n_ensemble: 100,
+        lambda_mean: parseFloat(document.getElementById("lambda_mean").value),
+        lambda_std:  parseFloat(document.getElementById("lambda_std").value),
+        gamma_mean:  parseFloat(document.getElementById("gamma_mean").value),
+        gamma_std:   parseFloat(document.getElementById("gamma_std").value),
+        ar2_phi1:    parseFloat(document.getElementById("ar2_phi1").value),
+        ar2_phi2:    parseFloat(document.getElementById("ar2_phi2").value),
+      };
+    }
+
+    async function runModel() {
+      document.getElementById("runError").textContent = "";
+      const btn = document.getElementById("runBtn");
+      btn.disabled = true; btn.textContent = "Running…";
+      try {
+        const body = { scenario: document.getElementById("scenario").value, ...getParams() };
+        const res = await fetch("/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.error) { document.getElementById("runError").textContent = data.error; return; }
+        showResults(data);
+      } catch(e) {
+        document.getElementById("runError").textContent = "Error: " + e;
+      } finally { btn.disabled = false; btn.textContent = "Run"; }
+    }
+
+    async function runCustom() {
+      document.getElementById("customError").textContent = "";
+      const fi = document.getElementById("customFile");
+      if (!fi.files.length) {
+        document.getElementById("customError").textContent = "Please select a file first."; return;
+      }
+      const btn = document.getElementById("customBtn");
+      btn.disabled = true; btn.textContent = "Running…";
+      try {
+        const fd = new FormData();
+        fd.append("file", fi.files[0]);
+        Object.entries(getParams()).forEach(([k, v]) => fd.append(k, v));
+        const res = await fetch("/run_custom", { method: "POST", body: fd });
+        const data = await res.json();
+        if (data.error) { document.getElementById("customError").textContent = data.error; return; }
+        showResults(data);
+      } catch(e) {
+        document.getElementById("customError").textContent = "Error: " + e;
+      } finally { btn.disabled = false; btn.textContent = "Run Custom"; }
+    }
+
+    function showResults(data) {
+      lastData = data;
+      const ea = data.ecs_ensemble, ta = data.tcr_ensemble;
+      document.getElementById("ecsResult").textContent = data.ecs_default;
+      document.getElementById("tcrResult").textContent = data.tcr_default;
+      document.getElementById("ecsRange").textContent =
+        Math.min(...ea).toFixed(2) + "–" + Math.max(...ea).toFixed(2);
+      document.getElementById("tcrRange").textContent =
+        Math.min(...ta).toFixed(2) + "–" + Math.max(...ta).toFixed(2);
+      document.getElementById("resultsDerived").style.display = "block";
+      rerenderEmissions();
+      rerenderConc();
+      makeTempChart();
+      makeDiffChart();
+    }
+
+    function rerenderEmissions() {
+      if (!lastData) return;
+      const sp = document.getElementById("emSpecies").value;
+      const info = speciesMeta.emissions[sp] || { label: sp, units: "" };
+      makeTwoLineChart("emChart", lastData.years,
+        "Actual", lastData.emissions_by_species[sp], "#e67e22",
+        "Zero-anthro", lastData.emissions_zero_by_species[sp], "#999",
+        `${info.label} (${info.units})`);
+    }
+
+    function rerenderConc() {
+      if (!lastData) return;
+      const sp = document.getElementById("concSpecies").value;
+      const info = speciesMeta.concentrations[sp] || { label: sp, units: "" };
+      makeTwoLineChart("concChart", lastData.years,
+        "Actual", lastData.concentrations_by_species[sp], "#2980b9",
+        "Zero-anthro", lastData.concentrations_zero_by_species[sp], "#999",
+        `${info.label} (${info.units})`);
+    }
+
+    function destroyChart(id) {
+      if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+    }
+
+    function makeTwoLineChart(id, years, l1, d1, c1, l2, d2, c2, yLabel) {
+      destroyChart(id);
+      charts[id] = new Chart(document.getElementById(id), {
+        type: "line",
+        data: { labels: years, datasets: [
+          { label: l1, data: d1, borderColor: c1, backgroundColor: c1 + "22",
+            pointRadius: 0, borderWidth: 2, fill: true },
+          { label: l2, data: d2, borderColor: c2, backgroundColor: "transparent",
+            pointRadius: 0, borderWidth: 2, borderDash: [5, 3], fill: false },
+        ]},
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: true } },
+          scales: {
+            x: { title: { display: true, text: "Year" }, ticks: { maxTicksLimit: 10 } },
+            y: { title: { display: true, text: yLabel } }
+          }
+        }
+      });
+    }
+
+    function makeTempChart() {
+      destroyChart("tempChart");
+      const d = lastData, years = d.years;
+      const datasets = [];
+
+      d.ensemble.forEach((m, i) => datasets.push({
+        label: i === 0 ? "Actual — members" : "",
+        data: m, borderColor: "rgba(192,57,43,0.1)", pointRadius: 0, borderWidth: 1, fill: false
+      }));
+      d.ensemble_zero.forEach((m, i) => datasets.push({
+        label: i === 0 ? "Zero-anthro — members" : "",
+        data: m, borderColor: "rgba(130,130,130,0.1)", pointRadius: 0, borderWidth: 1, fill: false
+      }));
+
+      // 5-95% actual shading
+      datasets.push({ label: "Actual 5–95%", data: d.percentile_95,
+        borderColor: "rgba(192,57,43,0.25)", backgroundColor: "rgba(192,57,43,0.1)",
+        pointRadius: 0, borderWidth: 0, fill: "+1" });
+      datasets.push({ label: "", data: d.percentile_5,
+        borderColor: "rgba(192,57,43,0.25)", pointRadius: 0, borderWidth: 0, fill: false });
+
+      // Medians
+      datasets.push({ label: "Actual — median", data: d.percentile_50,
+        borderColor: "rgba(192,57,43,1)", pointRadius: 0, borderWidth: 2, fill: false });
+      datasets.push({ label: "Zero-anthro — median", data: d.percentile_50_zero,
+        borderColor: "rgba(80,80,80,1)", pointRadius: 0, borderWidth: 2,
+        borderDash: [6, 3], fill: false });
+
+      charts["tempChart"] = new Chart(document.getElementById("tempChart"), {
+        type: "line", data: { labels: years, datasets },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          plugins: { legend: { display: true, labels: { filter: i => i.text !== "" } } },
+          scales: {
+            x: { title: { display: true, text: "Year" }, ticks: { maxTicksLimit: 10 } },
+            y: { title: { display: true, text: "Temperature anomaly (°C)" } }
+          }
+        }
+      });
+    }
+
+    function makeDiffChart() {
+      destroyChart("diffChart");
+      const d = lastData, years = d.years;
+      const datasets = [
+        { label: "5–95% range", data: d.diff_percentile_95,
+          borderColor: "rgba(192,57,43,0.3)", backgroundColor: "rgba(192,57,43,0.15)",
+          pointRadius: 0, borderWidth: 0, fill: "+1" },
+        { label: "", data: d.diff_percentile_5,
+          borderColor: "rgba(192,57,43,0.3)", pointRadius: 0, borderWidth: 0, fill: false },
+        { label: "25–75% range", data: d.diff_percentile_75,
+          borderColor: "rgba(192,57,43,0.5)", backgroundColor: "rgba(192,57,43,0.3)",
+          pointRadius: 0, borderWidth: 0, fill: "+1" },
+        { label: "", data: d.diff_percentile_25,
+          borderColor: "rgba(192,57,43,0.5)", pointRadius: 0, borderWidth: 0, fill: false },
+        { label: "Median (ensemble)", data: d.diff_percentile_50,
+          borderColor: "rgba(150,20,20,1)", pointRadius: 0, borderWidth: 2, fill: false },
+        { label: "Forced signal (default ECS/TCR, no variability)", data: d.diff_forced,
+          borderColor: "rgba(0,0,0,0.75)", pointRadius: 0, borderWidth: 2,
+          borderDash: [6, 3], fill: false },
+      ];
+      charts["diffChart"] = new Chart(document.getElementById("diffChart"), {
+        type: "line", data: { labels: years, datasets },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          plugins: { legend: { display: true, labels: { filter: i => i.text !== "" } } },
+          scales: {
+            x: { title: { display: true, text: "Year" }, ticks: { maxTicksLimit: 10 } },
+            y: { title: { display: true, text: "Δ Temperature vs counterfactual (°C)" } }
+          }
+        }
+      });
+    }
+
+    init();
+  </script>
+</body>
+</html>
