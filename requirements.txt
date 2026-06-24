@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 fair==1.6.4
-numpy
+numpy==1.26.4
 pandas
 openpyxl
 python-multipart
